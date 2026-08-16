@@ -1,0 +1,20 @@
+{
+    "rust-analyzer.check.command": "clippy",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": "always"
+    },
+
+    // CodeLLDB settings to reduce noise
+    "lldb.verboseLogging": false,
+    "lldb.showDisassembly": "never",
+    "lldb.suppressMissingSourceFiles": true,
+    "lldb.consoleMode": "commands",
+    "lldb.displayFormat": "auto",
+    "lldb.dereferencePointers": true,
+
+    // Additional performance settings
+    "lldb.evaluationTimeout": 5,
+    "lldb.evaluateForHovers": false,
+    "lldb.commandCompletions": false
+}
