@@ -1,6 +1,7 @@
 pub mod fsx;
 pub mod protocol;
 pub mod receiver;
+pub mod sender;
 
 pub type SteamboatResult<T> = std::result::Result<T, anyhow::Error>;
 
