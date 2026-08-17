@@ -1,3 +1,4 @@
+pub mod discovery;
 pub mod fsx;
 pub mod protocol;
 pub mod receiver;
