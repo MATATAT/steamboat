@@ -1,3 +1,3 @@
-pub fn project_name() -> &'static str {
-    "steamboat"
-}
+pub mod protocol;
+
+pub type SteamboatResult<T> = std::result::Result<T, anyhow::Error>;
