@@ -233,7 +233,7 @@ pub fn plan_receive(files: &[FileEntry], dest: &Path) -> SteamboatResult<Receive
     Ok(plan)
 }
 
-/// Deletes leftover `*.part` files from an interrupted earlier run.
+/// Deletes leftover `*.steamboat-part` files from an interrupted earlier run.
 pub fn clean_orphan_parts(dest: &Path) -> SteamboatResult<u32> {
     let mut removed = 0;
     for entry in WalkDir::new(dest) {
@@ -242,7 +242,7 @@ pub fn clean_orphan_parts(dest: &Path) -> SteamboatResult<u32> {
             && entry
                 .file_name()
                 .to_string_lossy()
-                .ends_with(".part");
+                .ends_with(".steamboat-part");
 
         if is_part {
             fs::remove_file(entry.path())?;
@@ -407,9 +407,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("sub")).unwrap();
         fs::write(dir.path().join("keep.txt"), b"k").unwrap();
+        fs::write(dir.path().join("keep.part"), b"legit user file").unwrap();
         fs::write(
             dir.path()
-                .join("sub/orphan.bin.part"),
+                .join("sub/orphan.bin.steamboat-part"),
             b"o",
         )
         .unwrap();
@@ -421,8 +422,14 @@ mod tests {
                 .exists()
         );
         assert!(
+            dir.path()
+                .join("keep.part")
+                .exists(),
+            "a user file that happens to end in .part must not be deleted"
+        );
+        assert!(
             !dir.path()
-                .join("sub/orphan.bin.part")
+                .join("sub/orphan.bin.steamboat-part")
                 .exists()
         );
     }

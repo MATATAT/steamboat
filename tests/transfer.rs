@@ -228,7 +228,7 @@ async fn mid_stream_disconnect_keeps_completed_files_and_no_part_files() {
     );
     assert!(
         !dst.path()
-            .join("cut.bin.part")
+            .join("cut.bin.steamboat-part")
             .exists()
     );
 }

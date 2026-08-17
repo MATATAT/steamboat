@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use steamboat::receiver::{ReceiveOutcome, TransferOffer};
 use steamboat::{Progress, SteamboatResult, discovery, fsx, receiver, sender};
@@ -169,12 +169,39 @@ async fn send_cmd(paths: Vec<PathBuf>, to: Option<SocketAddr>) -> SteamboatResul
     Ok(())
 }
 
+/// Accepts and serves connections until `listener.accept()` errors. Runs for
+/// as long as the process should keep receiving; the caller races this
+/// against Ctrl-C.
+async fn serve_loop(listener: TcpListener, dest: &Path, name: &str) -> SteamboatResult<()> {
+    loop {
+        let (stream, peer_addr) = listener.accept().await?;
+        println!("connection from {peer_addr}");
+        let outcome = receiver::run_receiver(stream, dest, name, confirm, &BarProgress::new()).await;
+        match outcome {
+            Ok(ReceiveOutcome::Completed(report)) => {
+                for (wire, native) in &report.renamed {
+                    println!("renamed for this filesystem: {wire} -> {native}");
+                }
+                for wire in &report.collided {
+                    println!("failed: {wire} collides with another incoming file here");
+                }
+                println!(
+                    "done: {} received, {} already present, {} failed\n",
+                    report.summary.received, report.summary.skipped, report.summary.failed
+                );
+            }
+            Ok(ReceiveOutcome::Declined) => println!("declined\n"),
+            Err(e) => eprintln!("transfer failed: {e:#}\n"),
+        }
+    }
+}
+
 async fn receive_cmd(dest: PathBuf) -> SteamboatResult<()> {
     std::fs::create_dir_all(&dest)?;
     let dest = dest.canonicalize()?;
     let removed = fsx::clean_orphan_parts(&dest)?;
     if removed > 0 {
-        println!("cleaned {removed} orphaned .part file(s)");
+        println!("cleaned {removed} orphaned .steamboat-part file(s)");
     }
 
     let listener = TcpListener::bind(("0.0.0.0", 0)).await?;
@@ -186,33 +213,11 @@ async fn receive_cmd(dest: PathBuf) -> SteamboatResult<()> {
     println!("direct address (for --to): {shown_ip}:{port}");
     println!("press Ctrl-C to stop\n");
 
-    loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
-            accepted = listener.accept() => {
-                let (stream, peer_addr) = accepted?;
-                println!("connection from {peer_addr}");
-                let outcome =
-                    receiver::run_receiver(stream, &dest, &name, confirm, &BarProgress::new())
-                        .await;
-                match outcome {
-                    Ok(ReceiveOutcome::Completed(report)) => {
-                        for (wire, native) in &report.renamed {
-                            println!("renamed for this filesystem: {wire} -> {native}");
-                        }
-                        for wire in &report.collided {
-                            println!("skipped: {wire} collides with another incoming file here");
-                        }
-                        println!(
-                            "done: {} received, {} already present, {} failed\n",
-                            report.summary.received, report.summary.skipped, report.summary.failed
-                        );
-                    }
-                    Ok(ReceiveOutcome::Declined) => println!("declined\n"),
-                    Err(e) => eprintln!("transfer failed: {e:#}\n"),
-                }
-            }
-        }
+    // A single ctrl_c() future races the whole serve loop (not just accept())
+    // so a mid-transfer SIGINT actually aborts the task.
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        result = serve_loop(listener, &dest, &name) => result?,
     }
 
     Ok(())

@@ -69,6 +69,8 @@ pub async fn run_receiver(
             .map(|f| f.size)
             .sum(),
     };
+    // Blocking on stdin here means Ctrl-C can't preempt this task while the
+    // confirm prompt is open; it takes effect at the next await point.
     if !accept(&offer) {
         write_frame(&mut stream, &ManifestReply::Rejected).await?;
 
@@ -139,14 +141,14 @@ fn part_path(final_path: &Path) -> PathBuf {
     let mut part = final_path
         .as_os_str()
         .to_owned();
-    part.push(".part");
+    part.push(".steamboat-part");
 
     PathBuf::from(part)
 }
 
-/// Streams one file into `<final_path>.part`, verifying the hash before the
-/// rename. Returns `Ok(false)` on a hash mismatch; the `.part` file is
-/// removed on mismatch and on any I/O error.
+/// Streams one file into `<final_path>.steamboat-part`, verifying the hash
+/// before the rename. Returns `Ok(false)` on a hash mismatch; the
+/// `.steamboat-part` file is removed on mismatch and on any I/O error.
 async fn receive_one_file(
     stream: &mut (impl AsyncRead + AsyncWrite + Unpin),
     entry: &FileEntry,
@@ -160,10 +162,12 @@ async fn receive_one_file(
     let result = stream_to_part(stream, entry, &part, progress).await;
     match result {
         Ok(true) => {
-            // Windows rename fails onto an existing file; remove first.
-            tokio_fs::remove_file(final_path)
-                .await
-                .ok();
+            if cfg!(windows) {
+                // Windows rename fails onto an existing file; remove first.
+                tokio_fs::remove_file(final_path)
+                    .await
+                    .ok();
+            }
             tokio_fs::rename(&part, final_path).await?;
 
             Ok(true)
@@ -290,7 +294,7 @@ mod tests {
             }
         );
         assert_eq!(fs::read(dir.path().join("sub/a.txt")).unwrap(), b"hello");
-        matches!(task.await.unwrap().unwrap(), ReceiveOutcome::Completed(_));
+        assert!(matches!(task.await.unwrap().unwrap(), ReceiveOutcome::Completed(_)));
     }
 
     #[tokio::test]
@@ -332,7 +336,7 @@ mod tests {
         let reply = handshake(&mut sender, &manifest_of(&[("a.txt", b"hello")])).await;
 
         assert_eq!(reply, ManifestReply::Rejected);
-        matches!(task.await.unwrap().unwrap(), ReceiveOutcome::Declined);
+        assert!(matches!(task.await.unwrap().unwrap(), ReceiveOutcome::Declined));
     }
 
     #[tokio::test]
@@ -385,7 +389,7 @@ mod tests {
         );
         assert!(
             !dir.path()
-                .join("a.txt.part")
+                .join("a.txt.steamboat-part")
                 .exists()
         );
         task.await.unwrap().unwrap();
