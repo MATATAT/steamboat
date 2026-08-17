@@ -19,3 +19,11 @@ doesn't. The receiver confirms every incoming transfer before anything is
 written, and retrying an interrupted transfer only re-sends what's missing.
 
 Design: `docs/superpowers/specs/2026-08-16-steamboat-v1-design.md`
+
+## Troubleshooting
+
+- **Windows Firewall** prompts the first time `steamboat receive` binds a
+  port — allow it on private networks or the sender can't connect.
+- **Discovery finds nothing?** mDNS needs UDP 5353 multicast; VPN clients and
+  some routers silently block it. The receiver prints a direct address — use
+  `steamboat send --to <ip:port>` instead.

@@ -61,7 +61,7 @@ pub async fn run_sender(
         send_one_file(&mut stream, index, &files[index as usize], progress).await?;
     }
 
-    Ok(timeout(IDLE_TIMEOUT, read_frame(&mut stream)).await??)
+    timeout(IDLE_TIMEOUT, read_frame(&mut stream)).await?
 }
 
 async fn send_one_file(
