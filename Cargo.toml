@@ -1,7 +1,12 @@
 [package]
 name = "steamboat"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
+description = "Copy files between machines on the same LAN, with mDNS discovery and resumable transfers"
+repository = "https://github.com/MATATAT/steamboat"
+license = "MIT OR Apache-2.0"
+keywords = ["lan", "file-transfer", "steamos", "mdns"]
+categories = ["command-line-utilities", "network-programming"]
 
 [[bin]]
 name = "steamboat"
