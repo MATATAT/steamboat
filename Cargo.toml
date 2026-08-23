@@ -1,6 +1,6 @@
 [package]
 name = "steamboat"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 description = "Copy files between machines on the same LAN, with mDNS discovery and resumable transfers"
 repository = "https://github.com/MATATAT/steamboat"
