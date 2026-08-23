@@ -1,7 +1,8 @@
 use crate::SteamboatResult;
 use anyhow::Context;
-use mdns_sd::{ResolvedService, ServiceDaemon, ServiceEvent, ServiceInfo};
-use std::net::SocketAddr;
+use mdns_sd::{ResolvedService, ScopedIp, ServiceDaemon, ServiceEvent, ServiceInfo};
+use std::collections::HashSet;
+use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::time::{Duration, Instant};
 
 pub const SERVICE_TYPE: &str = "_steamboat._tcp.local.";
@@ -43,45 +44,101 @@ impl Drop for Advertiser {
     }
 }
 
-fn peer_from(info: &ResolvedService) -> Option<Peer> {
-    let ip = info
-        .addresses
-        .iter()
-        .find(|a| a.is_ipv4())
-        .or_else(|| info.addresses.iter().next())
-        .map(|a| a.to_ip_addr())?;
-    let name = info
-        .fullname
-        .split('.')
-        .next()
-        .unwrap_or(&info.fullname)
-        .to_string();
-
-    Some(Peer {
-        name,
-        addr: SocketAddr::new(ip, info.port),
-    })
+struct FoundService {
+    fullname: String,
+    port: u16,
+    addresses: HashSet<ScopedIp>,
 }
 
-/// Browses for receivers for `window`, blocking. Results are deduplicated by
-/// service fullname.
+impl FoundService {
+    fn absorb(&mut self, info: &ResolvedService) {
+        self.addresses
+            .extend(info.addresses.iter().cloned());
+    }
+}
+
+impl From<&ResolvedService> for FoundService {
+    fn from(info: &ResolvedService) -> FoundService {
+        FoundService {
+            fullname: info.fullname.clone(),
+            port: info.port,
+            addresses: info.addresses.clone(),
+        }
+    }
+}
+
+/// Lower is better: IPv4 routes everywhere, routable IPv6 usually does, and
+/// link-local IPv6 only works with the right interface scope.
+fn addr_rank(addr: &ScopedIp) -> u8 {
+    match addr {
+        ScopedIp::V4(_) => 0,
+        ScopedIp::V6(v6)
+            if !v6
+                .addr()
+                .is_unicast_link_local() =>
+        {
+            1
+        }
+        ScopedIp::V6(_) => 2,
+        _ => u8::MAX,
+    }
+}
+
+fn to_socket_addr(addr: &ScopedIp, port: u16) -> Option<SocketAddr> {
+    match addr {
+        ScopedIp::V4(v4) => Some(SocketAddr::new(IpAddr::V4(*v4.addr()), port)),
+        ScopedIp::V6(v6) => {
+            // A link-local address is unroutable without the scope of the
+            // local interface it was discovered on.
+            let scope = if v6
+                .addr()
+                .is_unicast_link_local()
+            {
+                v6.scope_id().index
+            } else {
+                0
+            };
+
+            Some(SocketAddr::V6(SocketAddrV6::new(*v6.addr(), port, 0, scope)))
+        }
+        _ => None,
+    }
+}
+
+fn best_addr(addresses: &HashSet<ScopedIp>, port: u16) -> Option<SocketAddr> {
+    addresses
+        .iter()
+        .min_by_key(|a| addr_rank(a))
+        .and_then(|a| to_socket_addr(a, port))
+}
+
+fn instance_name(fullname: &str) -> String {
+    fullname
+        .split('.')
+        .next()
+        .unwrap_or(fullname)
+        .to_string()
+}
+
+/// Browses for receivers for `window`, blocking. Repeated resolutions of the
+/// same service (one per interface) are merged, and each peer gets its most
+/// connectable address: IPv4, then routable IPv6, then scoped link-local IPv6.
 pub fn browse(window: Duration) -> SteamboatResult<Vec<Peer>> {
     let daemon = ServiceDaemon::new().context("starting mDNS daemon")?;
     let events = daemon
         .browse(SERVICE_TYPE)
         .context("browsing")?;
     let deadline = Instant::now() + window;
-    let mut peers: Vec<(String, Peer)> = Vec::new();
+    let mut found: Vec<FoundService> = Vec::new();
     while let Some(remaining) = deadline.checked_duration_since(Instant::now()) {
         match events.recv_timeout(remaining) {
             Ok(ServiceEvent::ServiceResolved(info)) => {
-                let fullname = info.fullname.clone();
-
-                if !peers
-                    .iter()
-                    .any(|(existing, _)| *existing == fullname)
+                match found
+                    .iter_mut()
+                    .find(|f| f.fullname == info.fullname)
                 {
-                    peers.extend(peer_from(&info).map(|p| (fullname, p)));
+                    Some(existing) => existing.absorb(&info),
+                    None => found.push(FoundService::from(&*info)),
                 }
             }
             Ok(_) => {}
@@ -90,15 +147,66 @@ pub fn browse(window: Duration) -> SteamboatResult<Vec<Peer>> {
     }
     daemon.shutdown().ok();
 
-    Ok(peers
+    Ok(found
         .into_iter()
-        .map(|(_, peer)| peer)
+        .filter_map(|f| {
+            best_addr(&f.addresses, f.port).map(|addr| Peer {
+                name: instance_name(&f.fullname),
+                addr,
+            })
+        })
         .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
+
+    fn scoped(ip: &str) -> ScopedIp {
+        ScopedIp::from(ip.parse::<IpAddr>().unwrap())
+    }
+
+    #[test]
+    fn best_addr_prefers_ipv4_over_any_ipv6() {
+        let addresses = HashSet::from([scoped("fe80::1"), scoped("2001:db8::1"), scoped("192.168.1.5")]);
+
+        assert_eq!(
+            best_addr(&addresses, 7),
+            Some(
+                "192.168.1.5:7"
+                    .parse()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn best_addr_prefers_routable_ipv6_over_link_local() {
+        let addresses = HashSet::from([scoped("fe80::1"), scoped("2001:db8::1")]);
+
+        assert_eq!(
+            best_addr(&addresses, 7),
+            Some(
+                "[2001:db8::1]:7"
+                    .parse()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn best_addr_falls_back_to_link_local() {
+        let addresses = HashSet::from([scoped("fe80::1")]);
+        let expected = SocketAddr::V6(SocketAddrV6::new("fe80::1".parse().unwrap(), 7, 0, 0));
+
+        assert_eq!(best_addr(&addresses, 7), Some(expected));
+    }
+
+    #[test]
+    fn best_addr_of_nothing_is_none() {
+        assert_eq!(best_addr(&HashSet::new(), 7), None);
+    }
 
     // Real multicast: run manually with `cargo test -- --ignored` on a LAN
     // without VPNs. Flaky on CI by nature, hence ignored.
