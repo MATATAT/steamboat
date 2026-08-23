@@ -1,9 +1,5 @@
 # steamboat v1 — Design
 
-2026-08-16. Distilled from a brainstorming session working off the hand-off
-spec in `code/.claude/projects/steamboat/artifacts/lan-transfer-utility-spec.md`,
-which remains the reference for background and cross-platform research.
-
 ## Purpose
 
 Copy files between machines on the same LAN, motivated by moving emulation
